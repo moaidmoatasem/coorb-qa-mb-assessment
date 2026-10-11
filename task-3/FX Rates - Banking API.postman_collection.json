@@ -1,0 +1,253 @@
+{
+  "info": {
+    "_postman_id": "f5b4350e-470b-4bd9-9454-5326c6d36933",
+    "name": "FX Rates - Banking API",
+    "description": "Tests for the Open ExchangeRate API (https://open.er-api.com/v6/latest/{base_currency}).\n\nA banking app shows customers an FX rate before an international transfer. If the rate is wrong, missing, or old, the customer sees the wrong price. These tests check that the rates are correct, complete, fresh, and consistent, and how the API handles bad currency codes.\n\n**Run it:** Collection Runner → environment `FX Rates - Banking Env` → data file `rates_data.json` (USD must be the first row).\n\n**Requests**\n1. Get rates for each currency in the data file (USD, EUR, GBP). Checks status, speed, shape, values. Saves USD→EUR.\n2. Get EUR rates and check EUR→USD is the inverse of the saved USD→EUR (within 2%).\n3. Negative — unsupported code `XYZ`: HTTP 200 with an error body.\n4. Negative — malformed code `INVALID_CURR`: HTTP 404 with an HTML page, not JSON.\n5. Negative — too-long code `USDX`: the API returns USD rates as success (it uses the first 3 letters).\n\nSee `part-a-notes.md` for what each assertion checks and why.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_exporter_id": "6379302"
+  },
+  "item": [
+    {
+      "name": "1. Get latest rates (data-driven)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Read the response and the currency we asked for",
+              "const body = pm.response.json();",
+              "const base = pm.variables.get(\"base_currency\");",
+              "const maxTime = Number(pm.environment.get(\"maxResponseTimeMs\"));",
+              "",
+              "pm.test(base + \" - status is 200 and result is success\", function () {",
+              "    pm.response.to.have.status(200);",
+              "    pm.expect(body.result).to.eql(\"success\");",
+              "});",
+              "",
+              "pm.test(base + \" - response time is below \" + maxTime + \" ms\", function () {",
+              "    pm.expect(pm.response.responseTime).to.be.below(maxTime);",
+              "});",
+              "",
+              "pm.test(base + \" - response has the expected fields\", function () {",
+              "    pm.expect(body.base_code).to.be.a(\"string\");",
+              "    pm.expect(body.time_last_update_unix).to.be.a(\"number\");",
+              "    pm.expect(body.rates).to.be.an(\"object\");",
+              "});",
+              "",
+              "pm.test(base + \" - base_code matches the requested currency\", function () {",
+              "    pm.expect(body.base_code).to.eql(base);",
+              "});",
+              "",
+              "pm.test(base + \" - rate of the base currency to itself is 1\", function () {",
+              "    pm.expect(body.rates[base]).to.eql(1);",
+              "});",
+              "",
+              "pm.test(base + \" - EUR, GBP, EGP, JPY are present and above 0\", function () {",
+              "    pm.expect(body.rates.EUR).to.be.above(0);",
+              "    pm.expect(body.rates.GBP).to.be.above(0);",
+              "    pm.expect(body.rates.EGP).to.be.above(0);",
+              "    pm.expect(body.rates.JPY).to.be.above(0);",
+              "});",
+              "",
+              "pm.test(base + \" - rates were updated in the last 48 hours\", function () {",
+              "    const nowInSeconds = Date.now() / 1000;",
+              "    const ageInHours = (nowInSeconds - body.time_last_update_unix) / 3600;",
+              "    pm.expect(ageInHours).to.be.below(48);",
+              "});",
+              "",
+              "// Save USD -> EUR so request 2 can check it",
+              "if (base === \"USD\") {",
+              "    pm.environment.set(\"captured_usd_to_eur_rate\", body.rates.EUR);",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v6/latest/{{base_currency}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v6",
+            "latest",
+            "{{base_currency}}"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "2. Check EUR to USD against saved USD to EUR",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const body = pm.response.json();",
+              "const usdToEur = Number(pm.environment.get(\"captured_usd_to_eur_rate\"));",
+              "const eurToUsd = body.rates.USD;",
+              "",
+              "pm.test(\"Status is 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "pm.test(\"USD to EUR was saved by request 1\", function () {",
+              "    pm.expect(usdToEur).to.be.above(0);",
+              "});",
+              "",
+              "// If 1 USD = 0.92 EUR, then 1 EUR should be about 1 / 0.92 = 1.087 USD",
+              "pm.test(\"EUR to USD is the inverse of USD to EUR (within 2%)\", function () {",
+              "    const expected = 1 / usdToEur;",
+              "    const difference = Math.abs(eurToUsd - expected) / expected;",
+              "    pm.expect(difference).to.be.below(0.02);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v6/latest/EUR",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v6",
+            "latest",
+            "EUR"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "3. Negative - unsupported code (XYZ)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// XYZ looks like a currency code, but it doesn't exist",
+              "const body = pm.response.json();",
+              "",
+              "pm.test(\"Status is 200 (the API reports the error inside the body)\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "pm.test(\"Body says result is error and error-type is unsupported-code\", function () {",
+              "    pm.expect(body.result).to.eql(\"error\");",
+              "    pm.expect(body[\"error-type\"]).to.eql(\"unsupported-code\");",
+              "});",
+              "",
+              "pm.test(\"No rates are returned\", function () {",
+              "    pm.expect(body.rates).to.be.undefined;",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v6/latest/{{unsupported_currency}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v6",
+            "latest",
+            "{{unsupported_currency}}"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "4. Negative - malformed code (INVALID_CURR)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// INVALID_CURR doesn't even look like a currency code",
+              "pm.test(\"Status is 404\", function () {",
+              "    pm.response.to.have.status(404);",
+              "});",
+              "",
+              "pm.test(\"Response is an HTML error page, not JSON\", function () {",
+              "    pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"text/html\");",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v6/latest/{{malformed_currency}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v6",
+            "latest",
+            "{{malformed_currency}}"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "5. Negative - too-long code (USDX)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// USDX is not a valid code, but the API cuts it to the first 3 letters",
+              "const body = pm.response.json();",
+              "",
+              "pm.test(\"API accepts USDX and returns success (risky behaviour)\", function () {",
+              "    pm.response.to.have.status(200);",
+              "    pm.expect(body.result).to.eql(\"success\");",
+              "});",
+              "",
+              "pm.test(\"The rates returned are for USD, not an error\", function () {",
+              "    pm.expect(body.base_code).to.eql(\"USD\");",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v6/latest/{{too_long_currency}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v6",
+            "latest",
+            "{{too_long_currency}}"
+          ]
+        }
+      },
+      "response": []
+    }
+  ]
+}
